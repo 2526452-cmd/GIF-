@@ -93,15 +93,15 @@
             </div>
         </div>
 
-        <div id="error-box" class="hidden mt-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm"></div>
+        <div id="error-box" class="hidden mt-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm break-all"></div>
     </div>
 
 <script>
-    // 移除先前的 hack，改用全新的 FFmpeg v12 API
     const { FFmpeg } = window.FFmpegWASM;
-    const { fetchFile, toBlobURL } = window.FFmpegUtil; // 引入 toBlobURL 解決跨域問題
+    const { fetchFile, toBlobURL } = window.FFmpegUtil; 
     
     const ffmpeg = new FFmpeg();
+    let lastFfmpegLog = ""; // 用來記錄 FFmpeg 的最後一句日誌
 
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
@@ -118,11 +118,17 @@
 
     let selectedFile = null;
 
-    // v12 版本的進度監聽寫法
+    // 監聽進度
     ffmpeg.on('progress', ({ progress }) => {
         const percent = Math.max(0, Math.min(100, Math.round(progress * 100)));
         progressBar.style.width = percent + '%';
         progressText.innerText = `转换中: ${percent}%`;
+    });
+
+    // 監聽底層日誌 (這能幫我們抓出 undefined 的真正原因)
+    ffmpeg.on('log', ({ message }) => {
+        console.log("[FFmpeg Log]", message);
+        lastFfmpegLog = message;
     });
 
     dropZone.onclick = () => fileInput.click();
@@ -159,15 +165,12 @@
         progressContainer.classList.remove('hidden');
         
         try {
-            // v12 版本的初始化與核心載入
             if (!ffmpeg.loaded) {
                 progressText.innerText = "正在加载全新转换引擎（首次加载需几秒钟）...";
                 
-                // 定義 CDN 基礎路徑
                 const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
                 const ffmpegURL = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd';
 
-                // 使用 toBlobURL 將跨域腳本轉換為本地 Blob，完美繞過浏览器的 Worker 跨域安全限制
                 await ffmpeg.load({
                     coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
                     wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
@@ -175,7 +178,6 @@
                 });
             }
 
-            // 抓取副檔名，幫助引擎更準確辨識各種格式 (AVI, MKV 等)
             const ext = selectedFile.name.substring(selectedFile.name.lastIndexOf('.'));
             const name = 'input_video' + (ext || '.mp4');
             
@@ -187,12 +189,17 @@
 
             progressText.innerText = "开始处理视频...";
             
-            // v12 版本的執行語法 (exec)
-            await ffmpeg.exec([
+            // 執行命令並獲取回傳碼
+            const ret = await ffmpeg.exec([
                 '-i', name, 
                 '-vf', `fps=${fps},scale=${width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`, 
                 'output.gif'
             ]);
+
+            // 檢查是否執行成功 (0 代表成功)
+            if (ret !== 0) {
+                throw new Error(`FFmpeg 核心處理失敗 (錯誤碼: ${ret})。底層訊息: ${lastFfmpegLog}`);
+            }
 
             const data = await ffmpeg.readFile('output.gif');
             const url = URL.createObjectURL(new Blob([data.buffer], { type: 'image/gif' }));
@@ -203,8 +210,19 @@
             resultSection.classList.remove('hidden');
 
         } catch (err) {
-            console.error(err);
-            showError("兼容性错误或转换失败: " + err.message);
+            console.error("轉換捕獲到錯誤:", err);
+            
+            // 安全地解析錯誤訊息，避免 undefined
+            let errorMsg = "未知錯誤";
+            if (err instanceof Error) {
+                errorMsg = err.message;
+            } else if (typeof err === 'string') {
+                errorMsg = err;
+            } else {
+                errorMsg = JSON.stringify(err);
+            }
+            
+            showError("转换失败: " + errorMsg + "\n\n(若影片太大或解析度過高，建議先裁切影片再試)");
             progressContainer.classList.add('hidden');
             processSection.classList.remove('hidden');
             convertBtn.disabled = false;
