@@ -99,7 +99,7 @@
 <script>
     // 移除先前的 hack，改用全新的 FFmpeg v12 API
     const { FFmpeg } = window.FFmpegWASM;
-    const { fetchFile } = window.FFmpegUtil;
+    const { fetchFile, toBlobURL } = window.FFmpegUtil; // 引入 toBlobURL 解決跨域問題
     
     const ffmpeg = new FFmpeg();
 
@@ -162,10 +162,16 @@
             // v12 版本的初始化與核心載入
             if (!ffmpeg.loaded) {
                 progressText.innerText = "正在加载全新转换引擎（首次加载需几秒钟）...";
+                
+                // 定義 CDN 基礎路徑
+                const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+                const ffmpegURL = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd';
+
+                // 使用 toBlobURL 將跨域腳本轉換為本地 Blob，完美繞過浏览器的 Worker 跨域安全限制
                 await ffmpeg.load({
-                    // 強制指定載入單執行緒核心，完美避開 SharedArrayBuffer 問題
-                    coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-                    wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm'
+                    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+                    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+                    classWorkerURL: await toBlobURL(`${ffmpegURL}/814.ffmpeg.js`, 'text/javascript')
                 });
             }
 
