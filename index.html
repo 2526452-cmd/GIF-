@@ -23,6 +23,12 @@
         <header class="text-center mb-6 md:mb-8">
             <h1 class="text-2xl md:text-3xl font-bold text-slate-800 mb-2">MP4 转 GIF 转换器</h1>
             <p class="text-sm md:text-base text-slate-500">基于浏览器的本地安全转换，保护您的隐私。</p>
+            <!-- 專屬作者標籤 -->
+            <div class="mt-4">
+                <span class="inline-flex items-center justify-center px-3 py-1 bg-blue-50 text-blue-600 text-xs font-semibold rounded-full border border-blue-200 shadow-sm">
+                    ✨ 由 涂 製作
+                </span>
+            </div>
         </header>
 
         <!-- Drop Zone -->
@@ -87,9 +93,14 @@
         </div>
 
         <div id="error-box" class="hidden mt-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm"></div>
-</div>
+    </div>
 
 <script>
+    // 解決 SharedArrayBuffer is not defined 的終極方案 (Polyfill 欺騙檢查)
+    if (typeof SharedArrayBuffer === 'undefined') {
+        window.SharedArrayBuffer = ArrayBuffer;
+    }
+
     const { createFFmpeg, fetchFile } = FFmpeg;
     
     // 回退到無需 SharedArrayBuffer 的核心版本
@@ -99,99 +110,99 @@
 
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
-        const processSection = document.getElementById('process-section');
-        const videoPreview = document.getElementById('video-preview');
-        const convertBtn = document.getElementById('convert-btn');
-        const progressContainer = document.getElementById('progress-container');
-        const progressBar = document.getElementById('progress-bar');
-        const progressText = document.getElementById('progress-text');
-        const resultSection = document.getElementById('result-section');
-        const gifResult = document.getElementById('gif-result');
-        const downloadLink = document.getElementById('download-link');
-        const errorBox = document.getElementById('error-box');
+    const processSection = document.getElementById('process-section');
+    const videoPreview = document.getElementById('video-preview');
+    const convertBtn = document.getElementById('convert-btn');
+    const progressContainer = document.getElementById('progress-container');
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const resultSection = document.getElementById('result-section');
+    const gifResult = document.getElementById('gif-result');
+    const downloadLink = document.getElementById('download-link');
+    const errorBox = document.getElementById('error-box');
 
-        let selectedFile = null;
+    let selectedFile = null;
 
-        dropZone.onclick = () => fileInput.click();
-        dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('drop-zone--over'); };
-        dropZone.ondragleave = () => { dropZone.classList.remove('drop-zone--over'); };
-        dropZone.ondrop = (e) => {
-            e.preventDefault();
-            dropZone.classList.remove('drop-zone--over');
-            if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
-        };
+    dropZone.onclick = () => fileInput.click();
+    dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('drop-zone--over'); };
+    dropZone.ondragleave = () => { dropZone.classList.remove('drop-zone--over'); };
+    dropZone.ondrop = (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('drop-zone--over');
+        if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    };
 
-        fileInput.onchange = (e) => {
-            if (e.target.files.length) handleFile(e.target.files[0]);
-        };
+    fileInput.onchange = (e) => {
+        if (e.target.files.length) handleFile(e.target.files[0]);
+    };
 
-        function handleFile(file) {
-            // Check if it has a video MIME type OR a common video file extension
-            const isVideoMime = file.type.startsWith('video/');
-            const isVideoExt = file.name.match(/\.(mp4|mov|avi|mkv|webm|flv|wmv|m4v|3gp|mpeg|mpg)$/i);
-            
-            if (!isVideoMime && !isVideoExt) {
-                showError("请选择有效的视频文件。");
-                return;
+    function handleFile(file) {
+        // Check if it has a video MIME type OR a common video file extension
+        const isVideoMime = file.type.startsWith('video/');
+        const isVideoExt = file.name.match(/\.(mp4|mov|avi|mkv|webm|flv|wmv|m4v|3gp|mpeg|mpg)$/i);
+        
+        if (!isVideoMime && !isVideoExt) {
+            showError("请选择有效的视频文件。");
+            return;
+        }
+        selectedFile = file;
+        videoPreview.src = URL.createObjectURL(file);
+        dropZone.classList.add('hidden');
+        processSection.classList.remove('hidden');
+        errorBox.classList.add('hidden');
+    }
+
+    convertBtn.onclick = async () => {
+        convertBtn.disabled = true;
+        processSection.classList.add('hidden');
+        progressContainer.classList.remove('hidden');
+        
+        try {
+            if (!ffmpeg.isLoaded()) {
+                progressText.innerText = "正在加载转换引擎（首次加载可能需要一些时间）...";
+                await ffmpeg.load();
             }
-            selectedFile = file;
-            videoPreview.src = URL.createObjectURL(file);
-            dropZone.classList.add('hidden');
+
+            const name = 'input_video';
+            ffmpeg.FS('writeFile', name, await fetchFile(selectedFile));
+
+            ffmpeg.setProgress(({ ratio }) => {
+                const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+                progressBar.style.width = percent + '%';
+                progressText.innerText = `转换中: ${percent}%`;
+            });
+
+            const width = document.getElementById('width-input').value || 400;
+            const fps = document.getElementById('fps-select').value;
+
+            // Simple high-quality GIF command
+            await ffmpeg.run(
+                '-i', name, 
+                '-vf', `fps=${fps},scale=${width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`, 
+                'output.gif'
+            );
+
+            const data = ffmpeg.FS('readFile', 'output.gif');
+            const url = URL.createObjectURL(new Blob([data.buffer], { type: 'image/gif' }));
+
+            gifResult.src = url;
+            downloadLink.href = url;
+            progressContainer.classList.add('hidden');
+            resultSection.classList.remove('hidden');
+
+        } catch (err) {
+            console.error(err);
+            showError("兼容性错误或转换失败: " + err.message);
+            progressContainer.classList.add('hidden');
             processSection.classList.remove('hidden');
-            errorBox.classList.add('hidden');
+            convertBtn.disabled = false;
         }
+    };
 
-        convertBtn.onclick = async () => {
-            convertBtn.disabled = true;
-            processSection.classList.add('hidden');
-            progressContainer.classList.remove('hidden');
-            
-            try {
-                if (!ffmpeg.isLoaded()) {
-                    progressText.innerText = "正在加载转换引擎（首次加载可能需要一些时间）...";
-                    await ffmpeg.load();
-                }
-
-                const name = 'input_video';
-                ffmpeg.FS('writeFile', name, await fetchFile(selectedFile));
-
-                ffmpeg.setProgress(({ ratio }) => {
-                    const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
-                    progressBar.style.width = percent + '%';
-                    progressText.innerText = `转换中: ${percent}%`;
-                });
-
-                const width = document.getElementById('width-input').value || 400;
-                const fps = document.getElementById('fps-select').value;
-
-                // Simple high-quality GIF command
-                await ffmpeg.run(
-                    '-i', name, 
-                    '-vf', `fps=${fps},scale=${width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`, 
-                    'output.gif'
-                );
-
-                const data = ffmpeg.FS('readFile', 'output.gif');
-                const url = URL.createObjectURL(new Blob([data.buffer], { type: 'image/gif' }));
-
-                gifResult.src = url;
-                downloadLink.href = url;
-                progressContainer.classList.add('hidden');
-                resultSection.classList.remove('hidden');
-
-            } catch (err) {
-                console.error(err);
-                showError("兼容性错误或转换失败: " + err.message);
-                progressContainer.classList.add('hidden');
-                processSection.classList.remove('hidden');
-                convertBtn.disabled = false;
-            }
-        };
-
-        function showError(msg) {
-            errorBox.innerText = msg;
-            errorBox.classList.remove('hidden');
-        }
-    </script>
+    function showError(msg) {
+        errorBox.innerText = msg;
+        errorBox.classList.remove('hidden');
+    }
+</script>
 </body>
 </html>
