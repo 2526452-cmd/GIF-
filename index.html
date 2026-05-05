@@ -5,9 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MP4 转 GIF 转换器</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- 使用最新 v0.12 版本，原生支援無 SharedArrayBuffer 環境且記憶體管理更好 -->
-    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-    <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
     <style>
         .drop-zone--over {
             border-color: #3b82f6;
@@ -97,11 +96,16 @@
     </div>
 
 <script>
+    // 在主线程预先注入补丁
+    if (typeof SharedArrayBuffer === 'undefined') {
+        window.SharedArrayBuffer = ArrayBuffer;
+    }
+
     const { FFmpeg } = window.FFmpegWASM;
-    const { fetchFile, toBlobURL } = window.FFmpegUtil; 
+    const { fetchFile } = window.FFmpegUtil; 
     
     const ffmpeg = new FFmpeg();
-    let lastFfmpegLog = ""; // 用來記錄 FFmpeg 的最後一句日誌
+    let lastFfmpegLog = ""; 
 
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
@@ -118,14 +122,12 @@
 
     let selectedFile = null;
 
-    // 監聽進度
     ffmpeg.on('progress', ({ progress }) => {
         const percent = Math.max(0, Math.min(100, Math.round(progress * 100)));
         progressBar.style.width = percent + '%';
         progressText.innerText = `转换中: ${percent}%`;
     });
 
-    // 監聽底層日誌 (這能幫我們抓出 undefined 的真正原因)
     ffmpeg.on('log', ({ message }) => {
         console.log("[FFmpeg Log]", message);
         lastFfmpegLog = message;
@@ -159,6 +161,27 @@
         errorBox.classList.add('hidden');
     }
 
+    // 自定义安全加载器：下载代码，并暴力注入 SAB 补丁，最后转化为 Blob
+    async function loadBlobAndPatch(url, mimeType) {
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            if (mimeType === 'text/javascript') {
+                let text = await response.text();
+                // 这是灵魂：强行让 Worker 内部也有 SharedArrayBuffer，防止崩溃
+                text = "if(typeof SharedArrayBuffer === 'undefined') { self.SharedArrayBuffer = self.ArrayBuffer; }\n" + text;
+                return URL.createObjectURL(new Blob([text], { type: mimeType }));
+            } else {
+                const buffer = await response.arrayBuffer();
+                return URL.createObjectURL(new Blob([buffer], { type: mimeType }));
+            }
+        } catch (e) {
+            console.error(`无法获取 ${url}:`, e);
+            throw e;
+        }
+    }
+
     convertBtn.onclick = async () => {
         convertBtn.disabled = true;
         processSection.classList.add('hidden');
@@ -166,16 +189,19 @@
         
         try {
             if (!ffmpeg.loaded) {
-                progressText.innerText = "正在加载全新转换引擎（首次加载需几秒钟）...";
+                progressText.innerText = "正在下载引擎组件 (约30MB，请稍候)...";
                 
-                const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-                const ffmpegURL = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd';
+                // 改用 jsDelivr，它比 unpkg 更加稳定
+                const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+                const ffmpegURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
 
-                await ffmpeg.load({
-                    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-                    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-                    classWorkerURL: await toBlobURL(`${ffmpegURL}/814.ffmpeg.js`, 'text/javascript')
-                });
+                // 手动下载并注入补丁
+                const coreURL = await loadBlobAndPatch(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+                const wasmURL = await loadBlobAndPatch(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+                const classWorkerURL = await loadBlobAndPatch(`${ffmpegURL}/814.ffmpeg.js`, 'text/javascript');
+
+                progressText.innerText = "正在初始化引擎...";
+                await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
             }
 
             const ext = selectedFile.name.substring(selectedFile.name.lastIndexOf('.'));
@@ -189,16 +215,14 @@
 
             progressText.innerText = "开始处理视频...";
             
-            // 執行命令並獲取回傳碼
             const ret = await ffmpeg.exec([
                 '-i', name, 
                 '-vf', `fps=${fps},scale=${width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`, 
                 'output.gif'
             ]);
 
-            // 檢查是否執行成功 (0 代表成功)
             if (ret !== 0) {
-                throw new Error(`FFmpeg 核心處理失敗 (錯誤碼: ${ret})。底層訊息: ${lastFfmpegLog}`);
+                throw new Error(`核心处理失败 (错误码: ${ret})。底层讯息: ${lastFfmpegLog}`);
             }
 
             const data = await ffmpeg.readFile('output.gif');
@@ -210,19 +234,10 @@
             resultSection.classList.remove('hidden');
 
         } catch (err) {
-            console.error("轉換捕獲到錯誤:", err);
+            console.error("转换捕获到错误:", err);
+            let errorMsg = err instanceof Error ? err.message : String(err);
             
-            // 安全地解析錯誤訊息，避免 undefined
-            let errorMsg = "未知錯誤";
-            if (err instanceof Error) {
-                errorMsg = err.message;
-            } else if (typeof err === 'string') {
-                errorMsg = err;
-            } else {
-                errorMsg = JSON.stringify(err);
-            }
-            
-            showError("转换失败: " + errorMsg + "\n\n(若影片太大或解析度過高，建議先裁切影片再試)");
+            showError("转换失败: " + errorMsg + "\n\n(若持续失败，可能是网路屏蔽了依赖文件下载)");
             progressContainer.classList.add('hidden');
             processSection.classList.remove('hidden');
             convertBtn.disabled = false;
