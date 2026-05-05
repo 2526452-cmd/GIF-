@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MP4 转 GIF 转换器</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- 使用 0.9.8 版本，完全避免 SharedArrayBuffer 限制 -->
-    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.9.8/dist/ffmpeg.min.js"></script>
+    <!-- 使用最新 v0.12 版本，原生支援無 SharedArrayBuffer 環境且記憶體管理更好 -->
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+    <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
     <style>
         .drop-zone--over {
             border-color: #3b82f6;
@@ -96,17 +97,11 @@
     </div>
 
 <script>
-    // 解決 SharedArrayBuffer is not defined 的終極方案 (Polyfill 欺騙檢查)
-    if (typeof SharedArrayBuffer === 'undefined') {
-        window.SharedArrayBuffer = ArrayBuffer;
-    }
-
-    const { createFFmpeg, fetchFile } = FFmpeg;
+    // 移除先前的 hack，改用全新的 FFmpeg v12 API
+    const { FFmpeg } = window.FFmpegWASM;
+    const { fetchFile } = window.FFmpegUtil;
     
-    // 回退到無需 SharedArrayBuffer 的核心版本
-    const ffmpeg = createFFmpeg({ 
-        log: true
-    });
+    const ffmpeg = new FFmpeg();
 
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
@@ -123,6 +118,13 @@
 
     let selectedFile = null;
 
+    // v12 版本的進度監聽寫法
+    ffmpeg.on('progress', ({ progress }) => {
+        const percent = Math.max(0, Math.min(100, Math.round(progress * 100)));
+        progressBar.style.width = percent + '%';
+        progressText.innerText = `转换中: ${percent}%`;
+    });
+
     dropZone.onclick = () => fileInput.click();
     dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('drop-zone--over'); };
     dropZone.ondragleave = () => { dropZone.classList.remove('drop-zone--over'); };
@@ -137,7 +139,6 @@
     };
 
     function handleFile(file) {
-        // Check if it has a video MIME type OR a common video file extension
         const isVideoMime = file.type.startsWith('video/');
         const isVideoExt = file.name.match(/\.(mp4|mov|avi|mkv|webm|flv|wmv|m4v|3gp|mpeg|mpg)$/i);
         
@@ -158,31 +159,36 @@
         progressContainer.classList.remove('hidden');
         
         try {
-            if (!ffmpeg.isLoaded()) {
-                progressText.innerText = "正在加载转换引擎（首次加载可能需要一些时间）...";
-                await ffmpeg.load();
+            // v12 版本的初始化與核心載入
+            if (!ffmpeg.loaded) {
+                progressText.innerText = "正在加载全新转换引擎（首次加载需几秒钟）...";
+                await ffmpeg.load({
+                    // 強制指定載入單執行緒核心，完美避開 SharedArrayBuffer 問題
+                    coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+                    wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm'
+                });
             }
 
-            const name = 'input_video';
-            ffmpeg.FS('writeFile', name, await fetchFile(selectedFile));
-
-            ffmpeg.setProgress(({ ratio }) => {
-                const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
-                progressBar.style.width = percent + '%';
-                progressText.innerText = `转换中: ${percent}%`;
-            });
+            // 抓取副檔名，幫助引擎更準確辨識各種格式 (AVI, MKV 等)
+            const ext = selectedFile.name.substring(selectedFile.name.lastIndexOf('.'));
+            const name = 'input_video' + (ext || '.mp4');
+            
+            progressText.innerText = "正在读取文件...";
+            await ffmpeg.writeFile(name, await fetchFile(selectedFile));
 
             const width = document.getElementById('width-input').value || 400;
             const fps = document.getElementById('fps-select').value;
 
-            // Simple high-quality GIF command
-            await ffmpeg.run(
+            progressText.innerText = "开始处理视频...";
+            
+            // v12 版本的執行語法 (exec)
+            await ffmpeg.exec([
                 '-i', name, 
                 '-vf', `fps=${fps},scale=${width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`, 
                 'output.gif'
-            );
+            ]);
 
-            const data = ffmpeg.FS('readFile', 'output.gif');
+            const data = await ffmpeg.readFile('output.gif');
             const url = URL.createObjectURL(new Blob([data.buffer], { type: 'image/gif' }));
 
             gifResult.src = url;
